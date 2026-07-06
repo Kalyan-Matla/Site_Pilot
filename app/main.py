@@ -102,10 +102,24 @@ async def alert_loop():
         await asyncio.sleep(ALERT_INTERVAL_HOURS * 3600)
 
 
+STARTUP_ERROR: str | None = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    migrate()
-    if os.environ.get("SEED_DEMO_DATA", "1") == "1":
+    global STARTUP_ERROR
+    try:
+        migrate()
+    except Exception:
+        # Don't let a broken DB take down the entire app (every route was
+        # crashing with FUNCTION_INVOCATION_FAILED before this existed,
+        # since an uncaught lifespan exception fails ASGI startup outright).
+        # Capture the real traceback so /api/health can report it, and keep
+        # serving static content / non-DB routes instead of dying completely.
+        import traceback
+        STARTUP_ERROR = traceback.format_exc()
+        log.exception("migrate() failed at startup")
+    if not STARTUP_ERROR and os.environ.get("SEED_DEMO_DATA", "1") == "1":
         try:
             seed_module.seed()
         except Exception:
@@ -134,6 +148,11 @@ async def unhandled(request: Request, exc: Exception):
 
 @app.get("/api/health")
 def health():
+    # TEMPORARY: surfaces the real startup traceback for diagnosing the
+    # Vercel deployment. Remove startup_error from the response once fixed —
+    # it can leak internal file paths.
+    if STARTUP_ERROR:
+        return JSONResponse(status_code=500, content={"ok": False, "startup_error": STARTUP_ERROR})
     return {"ok": True}
 
 
