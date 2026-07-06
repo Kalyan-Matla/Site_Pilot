@@ -15,10 +15,32 @@ import sqlite3
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-# Vercel's deployed bundle is read-only; only /tmp is writable there.
-_ON_VERCEL = bool(os.environ.get("VERCEL"))
-_default_data_dir = "/tmp/sitepilot-data" if _ON_VERCEL else str(BASE_DIR / "data")
-DATA_DIR = Path(os.environ.get("DATA_DIR", _default_data_dir))
+# Vercel's deployed bundle is read-only; only /tmp is writable there. Rather
+# than trust any single env var to say "we're on Vercel" (undocumented for
+# Python Functions specifically, and getting it wrong here crashes the whole
+# app at startup), probe candidate directories and use the first one that's
+# actually writable.
+_ON_VERCEL = bool(os.environ.get("VERCEL") or os.environ.get("VERCEL_ENV"))
+
+
+def _writable_data_dir() -> Path:
+    explicit = os.environ.get("DATA_DIR")
+    candidates = [explicit] if explicit else []
+    candidates += [str(BASE_DIR / "data"), "/tmp/sitepilot-data"]
+    for c in candidates:
+        path = Path(c)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / ".write_test"
+            probe.write_text("ok")
+            probe.unlink()
+            return path
+        except OSError:
+            continue
+    return Path("/tmp/sitepilot-data")  # last resort; not reached in practice
+
+
+DATA_DIR = _writable_data_dir()
 DB_PATH = Path(os.environ.get("DB_PATH", DATA_DIR / "sitepilot.db"))
 UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", DATA_DIR / "uploads"))
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"

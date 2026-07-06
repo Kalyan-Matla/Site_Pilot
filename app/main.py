@@ -25,7 +25,7 @@ log = logging.getLogger("sitepilot")
 # StaticFiles mount + catch-all route below.
 STATIC_DIR = Path(__file__).resolve().parent.parent / "public"
 ALERT_INTERVAL_HOURS = float(os.environ.get("ALERT_INTERVAL_HOURS", "24"))
-ON_VERCEL = bool(os.environ.get("VERCEL"))
+ON_VERCEL = bool(os.environ.get("VERCEL") or os.environ.get("VERCEL_ENV"))
 CRON_SECRET = os.environ.get("CRON_SECRET")
 
 
