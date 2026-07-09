@@ -9,21 +9,34 @@ Every router calls conn.execute(sql, params) with sqlite-style '?'
 placeholders. PgConnection below translates those transparently so no call
 site needs to know which backend is active.
 """
+import functools
 import os
 import re
 import sqlite3
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-# Vercel's deployed bundle is read-only; only /tmp is writable there. Rather
-# than trust any single env var to say "we're on Vercel" (undocumented for
-# Python Functions specifically, and getting it wrong here crashes the whole
-# app at startup), probe candidate directories and use the first one that's
-# actually writable.
-_ON_VERCEL = bool(os.environ.get("VERCEL") or os.environ.get("VERCEL_ENV"))
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+MIGRATIONS_PG_DIR = Path(__file__).resolve().parent / "migrations_pg"
+
+# IMPORTANT: no filesystem access happens at module import time, on purpose.
+# An earlier version resolved the writable data directory as a module-level
+# statement (`DATA_DIR = _writable_data_dir()`), which ran the instant Vercel
+# imported this file — before FastAPI's app object even existed, let alone
+# any try/except inside a route or lifespan function. If that import-time I/O
+# raised for any reason, nothing in the codebase could catch it: the whole
+# function failed to load and every route (including a plain health check)
+# came back as a generic, traceback-free crash. Everything below is deferred
+# behind a function call instead, so a filesystem problem surfaces as a
+# normal, catchable exception when something actually needs it.
 
 
-def _writable_data_dir() -> Path:
+@functools.lru_cache(maxsize=1)
+def get_data_dir() -> Path:
+    """Vercel's deployed bundle is read-only; only /tmp is writable there.
+    Rather than trust an env var to say "we're on Vercel" (unverified for
+    Python Functions), probe candidates and use the first one that's
+    actually writable — verified with a real write, not just mkdir succeeding."""
     explicit = os.environ.get("DATA_DIR")
     candidates = [explicit] if explicit else []
     candidates += [str(BASE_DIR / "data"), "/tmp/sitepilot-data"]
@@ -40,11 +53,14 @@ def _writable_data_dir() -> Path:
     return Path("/tmp/sitepilot-data")  # last resort; not reached in practice
 
 
-DATA_DIR = _writable_data_dir()
-DB_PATH = Path(os.environ.get("DB_PATH", DATA_DIR / "sitepilot.db"))
-UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR", DATA_DIR / "uploads"))
-MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
-MIGRATIONS_PG_DIR = Path(__file__).resolve().parent / "migrations_pg"
+def get_db_path() -> Path:
+    return Path(os.environ.get("DB_PATH", get_data_dir() / "sitepilot.db"))
+
+
+def get_upload_dir() -> Path:
+    d = Path(os.environ.get("UPLOAD_DIR", get_data_dir() / "uploads"))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 DATABASE_URL = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL")
 IS_PG = bool(DATABASE_URL)
@@ -122,7 +138,7 @@ def connect():
         return PgConnection(psycopg.connect(DATABASE_URL))
     # check_same_thread=False: each connection is request-scoped and used
     # sequentially, but FastAPI's threadpool may hop threads within a request.
-    conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
+    conn = sqlite3.connect(get_db_path(), timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
@@ -143,8 +159,8 @@ def get_db():
 
 
 def migrate():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    get_data_dir().mkdir(parents=True, exist_ok=True)
+    get_upload_dir()  # creates the uploads subdir as a side effect
     conn = connect()
     try:
         mdir = MIGRATIONS_PG_DIR if IS_PG else MIGRATIONS_DIR

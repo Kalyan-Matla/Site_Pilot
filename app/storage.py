@@ -14,7 +14,7 @@ import os
 from fastapi import HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 
-from .db import UPLOAD_DIR
+from .db import get_upload_dir
 
 log = logging.getLogger("sitepilot.storage")
 
@@ -43,7 +43,7 @@ def save_file(data: bytes, pathname: str) -> str:
             log.warning("vercel_blob.put returned no url for %s; falling back to local disk", pathname)
         except Exception:
             log.exception("vercel_blob upload failed for %s; falling back to local disk", pathname)
-    dest = UPLOAD_DIR / pathname
+    dest = get_upload_dir() / pathname
     dest.write_bytes(data)
     return dest.name
 
@@ -53,7 +53,7 @@ def download_response(handle: str, filename: str | None = None):
     either way."""
     if _is_url(handle):
         return RedirectResponse(handle, status_code=307)
-    path = UPLOAD_DIR / handle
+    path = get_upload_dir() / handle
     if not path.exists():
         raise HTTPException(404, "File not found")
     return FileResponse(path, filename=filename or handle)
@@ -70,4 +70,4 @@ def delete_file(handle: str):
         except Exception:
             log.exception("vercel_blob delete failed for %s", handle)
         return
-    (UPLOAD_DIR / handle).unlink(missing_ok=True)
+    (get_upload_dir() / handle).unlink(missing_ok=True)
